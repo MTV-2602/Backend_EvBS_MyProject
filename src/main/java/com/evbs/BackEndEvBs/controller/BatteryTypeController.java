@@ -2,6 +2,7 @@ package com.evbs.BackEndEvBs.controller;
 
 import com.evbs.BackEndEvBs.entity.BatteryType;
 import com.evbs.BackEndEvBs.model.request.BatteryTypeRequest;
+import com.evbs.BackEndEvBs.model.request.BatteryTypeUpdateRequest;
 import com.evbs.BackEndEvBs.service.BatteryTypeService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -39,28 +40,22 @@ public class BatteryTypeController {
         return ResponseEntity.ok(batteryTypes);
     }
 
-    @GetMapping("/{id}")
-    @Operation(summary = "Get battery type by ID")
-    public ResponseEntity<BatteryType> getBatteryTypeById(@PathVariable Long id) {
-        BatteryType batteryType = batteryTypeService.getBatteryTypeById(id);
-        return ResponseEntity.ok(batteryType);
-    }
-
     @PutMapping("/{id}")
     @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Update battery type")
     public ResponseEntity<BatteryType> updateBatteryType(
             @PathVariable Long id,
-            @Valid @RequestBody BatteryTypeRequest request) {
+            @Valid @RequestBody BatteryTypeUpdateRequest request) {
         BatteryType batteryType = batteryTypeService.updateBatteryType(id, request);
         return ResponseEntity.ok(batteryType);
     }
 
     @DeleteMapping("/{id}")
     @PreAuthorize("hasRole('ADMIN')")
-    @Operation(summary = "Delete battery type")
+    @Operation(summary = "Delete battery type (chỉ khi không có pin/xe/trạm sử dụng)")
     public ResponseEntity<Void> deleteBatteryType(@PathVariable Long id) {
         batteryTypeService.deleteBatteryType(id);
         return ResponseEntity.noContent().build();
     }
+
 }

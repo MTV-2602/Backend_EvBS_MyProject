@@ -64,20 +64,23 @@ public class BookingExpirationScheduler {
                 }
 
                 if (booking.getStatus() == Booking.Status.CONFIRMED) {
-                    // TRU LUOT SWAP VI DRIVER KHONG DEN
-                    deductSwapForNoShow(booking);
+                    // KHÔNG HOÀN LẠI LƯỢT SWAP (đã trừ từ lúc booking, driver không đến = mất lượt)
+
+                    // Lưu mã code trước khi xóa để gửi email
+                    String oldCode = booking.getConfirmationCode();
 
                     booking.setStatus(Booking.Status.CANCELLED);
+                    booking.setConfirmationCode(null); // Xóa mã code để giải phóng
                     booking.setReservedBattery(null);
                     booking.setReservationExpiry(null);
                     bookingRepository.save(booking);
 
-                    logger.info("Da huy booking het han VA TRU LUOT SWAP. BookingID: {}, ConfirmationCode: {}, DriverID: {}",
-                            booking.getId(), booking.getConfirmationCode(), booking.getDriver().getId());
+                    logger.info("Da huy booking het han (KHONG HOAN LAI LUOT). BookingID: {}, ConfirmationCode: '{}' (da xoa), DriverID: {}",
+                            booking.getId(), oldCode, booking.getDriver().getId());
                     cancelledCount++;
 
                     // GỬI EMAIL THÔNG BÁO HỦY TỰ ĐỘNG CHO DRIVER
-                    sendAutoCancellationEmail(booking);
+                    sendAutoCancellationEmail(booking, oldCode);
                 }
 
                 releaseBattery(battery);
@@ -100,53 +103,15 @@ public class BookingExpirationScheduler {
                 battery.getId(), battery.getCurrentStation() != null ? battery.getCurrentStation().getId() : null);
     }
 
-    private void deductSwapForNoShow(Booking booking) {
-        try {
-            List<DriverSubscription> activeSubscriptions = driverSubscriptionRepository
-                    .findActiveSubscriptionsByDriver(booking.getDriver(), java.time.LocalDate.now());
-
-            if (activeSubscriptions.isEmpty()) {
-                logger.warn("Khong tim thay subscription ACTIVE cho driver. DriverID: {}",
-                        booking.getDriver().getId());
-                return;
-            }
-
-            DriverSubscription subscription = activeSubscriptions.get(0);
-            int remainingBefore = subscription.getRemainingSwaps();
-
-            if (remainingBefore > 0) {
-                subscription.setRemainingSwaps(remainingBefore - 1);
-
-                if (subscription.getRemainingSwaps() == 0) {
-                    subscription.setStatus(DriverSubscription.Status.EXPIRED);
-                    logger.info("Subscription het luot swap. SubscriptionID: {}, DriverID: {}",
-                            subscription.getId(), booking.getDriver().getId());
-                }
-
-                driverSubscriptionRepository.save(subscription);
-
-                logger.info("Da tru luot swap vi khong den. DriverID: {}, RemainingSwaps: {} → {}",
-                        booking.getDriver().getId(), remainingBefore, subscription.getRemainingSwaps());
-            } else {
-                logger.warn("Subscription da het luot swap. SubscriptionID: {}, DriverID: {}",
-                        subscription.getId(), booking.getDriver().getId());
-            }
-
-        } catch (Exception e) {
-            logger.error("Loi khi tru luot swap. BookingID: {}, DriverID: {}",
-                    booking.getId(), booking.getDriver().getId(), e);
-        }
-    }
-
     /**
      * GỬI EMAIL THÔNG BÁO HỦY TỰ ĐỘNG CHO DRIVER
      * Vì booking bị hủy do hết thời gian reservation (3 tiếng)
      */
-    private void sendAutoCancellationEmail(Booking booking) {
+    private void sendAutoCancellationEmail(Booking booking, String confirmationCode) {
         try {
             EmailDetail emailDetail = new EmailDetail();
             emailDetail.setRecipient(booking.getDriver().getEmail());
-            emailDetail.setSubject("THÔNG BÁO HỦY BOOKING TỰ ĐỘNG - " + booking.getConfirmationCode());
+            emailDetail.setSubject("THÔNG BÁO HỦY BOOKING TỰ ĐỘNG - " + confirmationCode);
             emailDetail.setFullName(booking.getDriver().getFullName());
 
             emailDetail.setBookingId(booking.getId());
@@ -160,19 +125,26 @@ public class BookingExpirationScheduler {
             DateTimeFormatter formatter = DateTimeFormatter.ofPattern("HH:mm - dd/MM/yyyy");
             emailDetail.setBookingTime(booking.getBookingTime().format(formatter));
 
-            emailDetail.setVehicleModel(booking.getVehicle().getModel() != null ? booking.getVehicle().getModel() : booking.getVehicle().getPlateNumber());
+            // TÁCH RIÊNG: Model xe và Biển số xe
+            emailDetail.setVehicleModel(booking.getVehicle().getModel() != null ? booking.getVehicle().getModel() : "Xe điện");
+            emailDetail.setVehiclePlateNumber(booking.getVehicle().getPlateNumber()); // Biển số riêng
+            
             emailDetail.setBatteryType(
                     booking.getStation().getBatteryType().getName() +
                             (booking.getStation().getBatteryType().getCapacity() != null ? " - " + booking.getStation().getBatteryType().getCapacity() + "kWh" : "")
             );
             emailDetail.setStatus("CANCELLED");
-            emailDetail.setConfirmationCode(booking.getConfirmationCode());
+            emailDetail.setConfirmationCode(confirmationCode);
 
             // Thông báo lý do hủy tự động
             emailDetail.setCancellationPolicy(
                     "Booking của bạn đã bị hủy tự động do hết thời gian giữ chỗ (3 giờ). " +
-                            "Một lượt swap đã bị trừ khỏi gói dịch vụ của bạn vì không đến thực hiện swap."
+                            "Lượt swap đã bị trừ từ lúc booking và KHÔNG ĐƯỢC HOÀN LẠI vì bạn không đến."
             );
+
+            // Thêm loại hủy và lý do
+            emailDetail.setCancellationType("AUTO");
+            emailDetail.setCancellationReason("Hết thời gian giữ chỗ (3 giờ)");
 
             emailService.sendBookingCancellationEmail(emailDetail);
 

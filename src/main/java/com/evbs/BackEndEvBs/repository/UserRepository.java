@@ -17,4 +17,13 @@ public interface UserRepository extends JpaRepository<User, Long> {
     
     // Kiểm tra phone number đã tồn tại chưa
     boolean existsByPhoneNumber(String phoneNumber);
+
+    // Dashboard queries - Đếm user theo role
+    Long countByRole(User.Role role);
+
+    // Đếm user theo status
+    Long countByStatus(User.Status status);
+
+    // Tìm tất cả admin
+    List<User> findByRole(User.Role role);
 }

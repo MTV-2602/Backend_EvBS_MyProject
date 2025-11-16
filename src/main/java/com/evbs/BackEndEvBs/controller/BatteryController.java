@@ -3,6 +3,7 @@ package com.evbs.BackEndEvBs.controller;
 import com.evbs.BackEndEvBs.entity.Battery;
 import com.evbs.BackEndEvBs.model.request.BatteryRequest;
 import com.evbs.BackEndEvBs.model.request.BatteryUpdateRequest;
+import com.evbs.BackEndEvBs.model.request.FaultyBatterySwapRequest;
 import com.evbs.BackEndEvBs.service.BatteryService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -32,7 +33,7 @@ public class BatteryController {
      * POST /api/battery : Create new battery (Admin/Staff only)
      */
     @PostMapping
-    @PreAuthorize("hasRole('ADMIN') or hasRole('STAFF')")
+    @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Create new battery")
     public ResponseEntity<Battery> createBattery(@Valid @RequestBody BatteryRequest request) {
         Battery battery = batteryService.createBattery(request);
@@ -43,7 +44,7 @@ public class BatteryController {
      * GET /api/battery : Get all batteries (Admin/Staff only)
      */
     @GetMapping
-    @PreAuthorize("hasRole('ADMIN') or hasRole('STAFF')")
+    @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Get all batteries")
     public ResponseEntity<List<Battery>> getAllBatteries() {
         List<Battery> batteries = batteryService.getAllBatteries();
@@ -51,21 +52,10 @@ public class BatteryController {
     }
 
     /**
-     * GET /api/battery/{id} : Get battery by ID (Admin/Staff only)
-     */
-    @GetMapping("/{id}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('STAFF')")
-    @Operation(summary = "Get battery by ID")
-    public ResponseEntity<Battery> getBatteryById(@PathVariable Long id) {
-        Battery battery = batteryService.getBatteryById(id);
-        return ResponseEntity.ok(battery);
-    }
-
-    /**
      * PUT /api/battery/{id} : Update battery (Admin/Staff only)
      */
     @PutMapping("/{id}")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('STAFF')")
+    @PreAuthorize("hasRole('ADMIN')")
     @Operation(summary = "Update battery")
     public ResponseEntity<Battery> updateBattery(
             @PathVariable Long id,
@@ -85,16 +75,32 @@ public class BatteryController {
         return ResponseEntity.noContent().build();
     }
 
-    // ==================== PUBLIC ENDPOINTS ====================
+    /**
+     * GET /api/battery/warehouse/vehicle/{vehicleId} : Get warehouse batteries by vehicle (Admin/Staff only)
+     * Lấy pin ở kho khớp với loại pin của xe
+     */
+    @GetMapping("/warehouse/vehicle/{vehicleId}")
+    @PreAuthorize("hasRole('ADMIN') or hasRole('STAFF')")
+    @Operation(summary = "Get warehouse batteries by vehicle")
+    public ResponseEntity<List<Battery>> getWarehouseBatteriesByVehicle(@PathVariable Long vehicleId) {
+        List<Battery> batteries = batteryService.getWarehouseBatteriesByVehicleId(vehicleId);
+        return ResponseEntity.ok(batteries);
+    }
 
     /**
-     * GET /api/battery/available : Get available batteries (Public)
+     * POST /api/battery/swap-faulty : Swap faulty battery (Admin/Staff only)
+     * Đổi pin lỗi - chỉ áp dụng cho pin IN_USE
+     * Lấy pin từ kho để thay thế và thu hồi pin lỗi về kho với status MAINTENANCE
      */
-    @GetMapping("/available")
-    @Operation(summary = "Get available batteries")
-    public ResponseEntity<List<Battery>> getAvailableBatteries() {
-        List<Battery> batteries = batteryService.getAvailableBatteries();
-        return ResponseEntity.ok(batteries);
+    @PostMapping("/swap-faulty")
+    @PreAuthorize("hasRole('ADMIN') or hasRole('STAFF')")
+    @Operation(summary = "Swap faulty battery", description = "Đổi pin lỗi đang sử dụng (IN_USE) bằng pin từ kho. Pin lỗi sẽ được đưa về kho với status MAINTENANCE")
+    public ResponseEntity<Battery> swapFaultyBattery(@Valid @RequestBody FaultyBatterySwapRequest request) {
+        Battery replacementBattery = batteryService.swapFaultyBattery(
+                request.getVehicleId(),
+                request.getReplacementBatteryId()
+        );
+        return ResponseEntity.ok(replacementBattery);
     }
 
 }

@@ -11,4 +11,5 @@ public class LoginRequest {
     
     @NotEmpty
     String password;
+
 }

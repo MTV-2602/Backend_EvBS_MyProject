@@ -20,6 +20,8 @@ import com.evbs.BackEndEvBs.repository.VehicleRepository;
 import com.evbs.BackEndEvBs.repository.UserRepository;
 import com.evbs.BackEndEvBs.util.ConfirmationCodeGenerator;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -34,6 +36,8 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class BookingService {
+
+    private static final Logger log = LoggerFactory.getLogger(BookingService.class);
 
     @Autowired
     private final BookingRepository bookingRepository;
@@ -72,62 +76,67 @@ public class BookingService {
     public Booking createBooking(BookingRequest request) {
         User currentUser = authenticationService.getCurrentUser();
 
-        // VALIDATION 0: BAT BUOC phai co subscription ACTIVE
+        // VALIDATION: BAT BUOC phai co subscription ACTIVE VA CON LUOT SWAP
         DriverSubscription activeSubscription = driverSubscriptionRepository
                 .findActiveSubscriptionByDriver(currentUser, LocalDate.now())
-                .orElseThrow(() -> new AuthenticationException(
-                        "BAT BUOC: Ban phai mua goi dich vu truoc khi booking. " +
-                                "Vui long mua ServicePackage truoc."
-                ));
-
-        // VALIDATION 1: Kiem tra con luot swap khong
+                .orElse(null);
+        
+        // Kiểm tra có subscription và còn lượt swap
+        if (activeSubscription == null) {
+            throw new AuthenticationException("Chưa có gói dịch vụ. Vui lòng mua gói!");
+        }
+        
         if (activeSubscription.getRemainingSwaps() <= 0) {
-            throw new AuthenticationException(
-                    "Goi dich vu cua ban da het luot swap. " +
-                            "Vui long gia han hoac mua goi moi."
-            );
+            throw new AuthenticationException("Gói đã hết lượt. Vui lòng gia hạn!");
         }
 
-        // Kiểm tra driver đã có booking đang hoạt động chưa
-        List<Booking> activeBookings = bookingRepository.findByDriverAndStatusNotIn(
-                currentUser,
-                List.of(Booking.Status.CANCELLED, Booking.Status.COMPLETED)
-        );
-
-        if (!activeBookings.isEmpty()) {
-            throw new AuthenticationException("You already have an active booking. Please Complete or Cancel it before creating a new one.");
-        }
+        // Cho phép driver có nhiều xe booking cùng lúc
 
         // VALIDATION: Max 10 bookings per user per day
         LocalDate today = LocalDate.now();
-        long bookingsToday = bookingRepository.findByDriver(currentUser)
+        long bookingsToday = bookingRepository.findByDriverWithDetails(currentUser)
                 .stream()
                 .filter(b -> b.getBookingTime() != null && b.getBookingTime().toLocalDate().isEqual(today))
                 .count();
         if (bookingsToday >= 10) {
-            throw new AuthenticationException("You have reached the maximum of 10 bookings for today.");
+            throw new AuthenticationException("Đã đạt giới hạn 10 lượt/ngày!");
         }
 
         // Validate vehicle thuộc về driver
         Vehicle vehicle = vehicleRepository.findById(request.getVehicleId())
-                .orElseThrow(() -> new NotFoundException("Vehicle not found"));
+                .orElseThrow(() -> new NotFoundException("Không tìm thấy xe"));
 
         if (!vehicle.getDriver().getId().equals(currentUser.getId())) {
-            throw new AuthenticationException("Vehicle does not belong to current user");
+            throw new AuthenticationException("Xe không thuộc quyền sở hữu!");
+        }
+
+        // VALIDATION: Xe phải ở trạng thái ACTIVE mới được booking
+        if (vehicle.getStatus() != Vehicle.VehicleStatus.ACTIVE) {
+            throw new AuthenticationException("Xe chưa được phê duyệt!");
+        }
+
+        // KIỂM TRA: 1 xe chỉ được có 1 booking active tại 1 thời điểm
+        List<Booking> vehicleActiveBookings = bookingRepository.findByVehicleAndStatusNotIn(
+                vehicle,
+                List.of(Booking.Status.CANCELLED, Booking.Status.COMPLETED)
+        );
+
+        if (!vehicleActiveBookings.isEmpty()) {
+            throw new AuthenticationException("Xe đã có booking. Vui lòng hoàn tất hoặc hủy trước!");
         }
 
         // Validate station
         Station station = stationRepository.findById(request.getStationId())
-                .orElseThrow(() -> new NotFoundException("Station not found"));
+                .orElseThrow(() -> new NotFoundException("Không tìm thấy trạm"));
 
         // Validate station có cùng loại pin với xe
         if (!station.getBatteryType().getId().equals(vehicle.getBatteryType().getId())) {
-            throw new AuthenticationException("Station does not support the battery type of your vehicle");
+            throw new AuthenticationException("Trạm không hỗ trợ loại pin này!");
         }
 
         // ========== TỰ ĐỘNG SET THỜI GIAN 3 TIẾNG SAU ==========
         LocalDateTime now = LocalDateTime.now();
-        LocalDateTime bookingTime = now.plusHours(3); // LUÔN ĐẶT 3 TIẾNG SAU
+        LocalDateTime bookingTime = now.plusHours(3); //ĐẶT 3 TIẾNG SAU
 
         // ========== TỰ ĐỘNG CONFIRM BOOKING VÀ RESERVE PIN ==========
 
@@ -151,10 +160,7 @@ public class BookingService {
                 .toList();
 
         if (availableBatteries.isEmpty()) {
-            throw new NotFoundException(
-                    "Khong co pin nao du dien (>= 95%) tai tram nay. " +
-                            "Vui long chon tram khac hoac doi sau."
-            );
+            throw new NotFoundException("Trạm hết pin. Vui lòng chọn trạm khác!");
         }
 
         // Lấy pin có sức khỏe cao nhất
@@ -203,6 +209,17 @@ public class BookingService {
         reservedBattery.setReservedForBooking(savedBooking);
         batteryRepository.save(reservedBattery);
 
+        // TRỪ LƯỢT SWAP NGAY KHI BOOKING THÀNH CÔNG
+        int currentRemaining = activeSubscription.getRemainingSwaps();
+        activeSubscription.setRemainingSwaps(currentRemaining - 1);
+        driverSubscriptionRepository.save(activeSubscription);
+        
+        log.info("Đã trừ 1 lượt swap khi booking. Driver: {}, Còn lại: {}", 
+                currentUser.getId(), activeSubscription.getRemainingSwaps());
+
+        // Set số lượt còn lại vào response để driver biết
+        savedBooking.setRemainingSwaps(activeSubscription.getRemainingSwaps());
+
         // Gửi email xác nhận booking VỚI MÃ CODE
         sendBookingConfirmedEmail(savedBooking, booking.getConfirmedBy());
 
@@ -215,8 +232,8 @@ public class BookingService {
     @Transactional
     public Booking cancelMyBooking(Long id) {
         User currentUser = authenticationService.getCurrentUser();
-        Booking booking = bookingRepository.findByIdAndDriver(id, currentUser)
-                .orElseThrow(() -> new NotFoundException("Booking not found"));
+        Booking booking = bookingRepository.findByIdAndDriverWithDetails(id, currentUser)
+                .orElseThrow(() -> new NotFoundException("Không tìm thấy đặt chỗ"));
 
         LocalDateTime now = LocalDateTime.now();
 
@@ -225,23 +242,15 @@ public class BookingService {
 
         // QUAN TRỌNG: CHỈ CHO PHÉP HỦY KHI CÒN TRÊN 1 TIẾNG
         if (minutesUntilBooking <= ALLOW_CANCEL_BEFORE_MINUTES) {
-            throw new AuthenticationException(
-                    String.format(
-                            "Không thể hủy booking. Chỉ được hủy trước giờ đặt lịch %d phút. " +
-                                    "Thời gian còn lại: %d phút. " +
-                                    "Vui long liên hệ staff để được hỗ trợ.",
-                            ALLOW_CANCEL_BEFORE_MINUTES,
-                            minutesUntilBooking
-                    )
-            );
+            throw new AuthenticationException("Quá gần giờ đặt! Liên hệ staff để hủy.");
         }
 
         // Kiểm tra nếu booking đã COMPLETED hoặc CANCELLED
         if (booking.getStatus() == Booking.Status.COMPLETED) {
-            throw new AuthenticationException("Không thể hủy booking đã hoàn thành");
+            throw new AuthenticationException("Booking đã hoàn thành!");
         }
         if (booking.getStatus() == Booking.Status.CANCELLED) {
-            throw new AuthenticationException("Booking này đã được hủy trước đó");
+            throw new AuthenticationException("Booking đã bị hủy!");
         }
 
         // NẾU BOOKING ĐÃ CONFIRMED VÀ CÓ PIN RESERVED → GIẢI PHÓNG PIN
@@ -266,12 +275,37 @@ public class BookingService {
             booking.setReservationExpiry(null);
         }
 
-        // Hủy booking
+        // HOÀN LẠI LƯỢT SWAP TRƯỚC KHI HỦY BOOKING
+        List<DriverSubscription> subscriptions = driverSubscriptionRepository.findByDriver_Id(currentUser.getId());
+        DriverSubscription subscription = subscriptions.stream()
+                .filter(s -> s.getStatus() == DriverSubscription.Status.ACTIVE || s.getStatus() == DriverSubscription.Status.EXPIRED)
+                .max((s1, s2) -> s1.getId().compareTo(s2.getId()))
+                .orElse(null);
+        
+        if (subscription != null) {
+            int oldRemaining = subscription.getRemainingSwaps();
+            subscription.setRemainingSwaps(oldRemaining + 1);
+            
+            // Nếu subscription đã EXPIRED nhưng còn hoàn lại lượt, kích hoạt lại thành ACTIVE
+            if (subscription.getStatus() == DriverSubscription.Status.EXPIRED && subscription.getRemainingSwaps() > 0) {
+                subscription.setStatus(DriverSubscription.Status.ACTIVE);
+            }
+            
+            driverSubscriptionRepository.save(subscription);
+            
+            log.info("Đã hoàn lại 1 lượt swap khi hủy booking. Driver: {}, {} → {}, Status: {}", 
+                    currentUser.getId(), oldRemaining, subscription.getRemainingSwaps(), subscription.getStatus());
+        } else {
+            log.warn("KHÔNG TÌM THẤY subscription để hoàn lại lượt cho driver: {}", currentUser.getId());
+        }
+
+        // Hủy booking và xóa confirmation code để giải phóng mã
         booking.setStatus(Booking.Status.CANCELLED);
+        booking.setConfirmationCode(null); // Xóa mã code để giải phóng
         Booking savedBooking = bookingRepository.save(booking);
 
         // Gửi email thông báo hủy booking
-        sendBookingCancellationEmail(savedBooking);
+        sendBookingCancellationEmail(savedBooking, "DRIVER", null);
 
         // Detach entity to prevent lazy loading
         savedBooking.setReservedBattery(null);
@@ -286,7 +320,7 @@ public class BookingService {
     public Booking cancelBookingByStaff(Long id, String reason) {
         User currentUser = authenticationService.getCurrentUser();
         if (!isAdminOrStaff(currentUser)) {
-            throw new AuthenticationException("Chi Staff/Admin moi duoc huy booking");
+            throw new AuthenticationException("Chỉ Staff/Admin mới được hủy!");
         }
 
         Booking booking = bookingRepository.findById(id)
@@ -296,20 +330,20 @@ public class BookingService {
         if (currentUser.getRole() == User.Role.STAFF) {
             Station bookingStation = booking.getStation();
             if (bookingStation == null) {
-                throw new AuthenticationException("Booking khong co station");
+                throw new AuthenticationException("Booking không có trạm!");
             }
 
             if (!staffStationAssignmentRepository.existsByStaffAndStation(currentUser, bookingStation)) {
-                throw new AuthenticationException("Ban khong duoc phan cong quan ly tram nay. Chi co the huy booking cua tram minh quan ly.");
+                throw new AuthenticationException("Bạn không quản lý trạm này!");
             }
         }
 
         // Kiểm tra: Không cho hủy booking đã COMPLETED hoặc CANCELLED
         if (booking.getStatus() == Booking.Status.COMPLETED) {
-            throw new AuthenticationException("Khong the huy booking da COMPLETED");
+            throw new AuthenticationException("Booking đã hoàn tất!");
         }
         if (booking.getStatus() == Booking.Status.CANCELLED) {
-            throw new AuthenticationException("Booking nay da duoc huy truoc do");
+            throw new AuthenticationException("Booking đã bị hủy!");
         }
 
         // NẾU BOOKING ĐÃ CONFIRMED VÀ CÓ PIN RESERVED → GIẢI PHÓNG PIN
@@ -323,9 +357,9 @@ public class BookingService {
                 batteryRepository.save(battery);
 
                 System.out.println(String.format(
-                        "Staff hủy booking CONFIRMED. BookingID: %d, StaffID: %d, Reason: %s, BatteryID: %d da giai phong",
+                        "Nhân viên đã hủy đơn đặt chỗ ở trạng thái XÁC NHẬN. Mã đơn: %d, Mã nhân viên: %d, Lý do: %s, Pin có mã %d đã được giải phóng.",
                         booking.getId(), currentUser.getId(),
-                        reason != null ? reason : "Khong co ly do",
+                        reason != null ? reason : "Không có lí do",
                         battery.getId()
                 ));
             }
@@ -334,17 +368,45 @@ public class BookingService {
             booking.setReservationExpiry(null);
         }
 
+        // HOÀN LẠI LƯỢT SWAP TRƯỚC KHI STAFF HỦY BOOKING
+        User driver = booking.getDriver();
+        // Tìm subscription mới nhất (kể cả EXPIRED) để hoàn lại lượt
+        List<DriverSubscription> subscriptions = driverSubscriptionRepository.findByDriver_Id(driver.getId());
+        DriverSubscription subscription = subscriptions.stream()
+                .filter(s -> s.getStatus() == DriverSubscription.Status.ACTIVE || s.getStatus() == DriverSubscription.Status.EXPIRED)
+                .max((s1, s2) -> s1.getId().compareTo(s2.getId()))
+                .orElse(null);
+        
+        if (subscription != null) {
+            int oldRemaining = subscription.getRemainingSwaps();
+            subscription.setRemainingSwaps(oldRemaining + 1);
+            
+            // Nếu subscription đã EXPIRED nhưng còn hoàn lại lượt, kích hoạt lại thành ACTIVE
+            if (subscription.getStatus() == DriverSubscription.Status.EXPIRED && subscription.getRemainingSwaps() > 0) {
+                subscription.setStatus(DriverSubscription.Status.ACTIVE);
+            }
+            
+            driverSubscriptionRepository.save(subscription);
+            
+            log.info("Đã hoàn lại 1 lượt swap khi staff hủy booking. Driver: {}, {} → {}, Status: {}", 
+                    driver.getId(), oldRemaining, subscription.getRemainingSwaps(), subscription.getStatus());
+        } else {
+            log.warn("KHÔNG TÌM THẤY subscription để hoàn lại lượt cho driver: {}", driver.getId());
+        }
+
         // Hủy booking
         booking.setStatus(Booking.Status.CANCELLED);
+        booking.setConfirmationCode(null); // Xóa mã code để giải phóng
+        booking.setCancellationReason(reason); // Lưu lý do hủy
 
         System.out.println(String.format(
-                "Staff hủy booking. BookingID: %d, DriverID: %d, StaffID: %d, Reason: %s",
+                "Nhân viên đã hủy đơn đặt chỗ. Mã đơn: %d, Mã tài xế: %d, Mã nhân viên: %d, Lý do: %s",
                 booking.getId(), booking.getDriver().getId(), currentUser.getId(),
-                reason != null ? reason : "Khong co ly do"
+                reason != null ? reason : "Không có lí do"
         ));
 
         // Gửi email thông báo hủy booking
-        sendBookingCancellationEmail(booking);
+        sendBookingCancellationEmail(booking, "STAFF", reason);
 
         return bookingRepository.save(booking);
     }
@@ -360,7 +422,7 @@ public class BookingService {
 
             EmailDetail emailDetail = new EmailDetail();
             emailDetail.setRecipient(driver.getEmail());
-            emailDetail.setSubject("ĐẶT LỊCH THÀNH CÔNG - Mã swap pin: " + booking.getConfirmationCode());
+            emailDetail.setSubject("ĐẶT LỊCH THÀNH CÔNG - Mã đổi pin: " + booking.getConfirmationCode());
             emailDetail.setFullName(driver.getFullName());
 
             emailDetail.setBookingId(booking.getId());
@@ -374,31 +436,35 @@ public class BookingService {
             DateTimeFormatter formatter = DateTimeFormatter.ofPattern("HH:mm - dd/MM/yyyy");
             emailDetail.setBookingTime(booking.getBookingTime().format(formatter));
 
-            emailDetail.setVehicleModel(vehicle.getModel() != null ? vehicle.getModel() : vehicle.getPlateNumber());
+            // TÁCH RIÊNG: Model xe và Biển số xe
+            emailDetail.setVehicleModel(vehicle.getModel() != null ? vehicle.getModel() : "Xe điện");
+            emailDetail.setVehiclePlateNumber(vehicle.getPlateNumber()); //Biển số riêng
+
             emailDetail.setBatteryType(
                     station.getBatteryType().getName() +
                             (station.getBatteryType().getCapacity() != null ? " - " + station.getBatteryType().getCapacity() + "kWh" : "")
             );
             emailDetail.setStatus(booking.getStatus().toString());
 
+            // Mã xác nhận KHÔNG kèm biển số nữa
             emailDetail.setConfirmationCode(booking.getConfirmationCode());
             emailDetail.setConfirmedBy(confirmedBy != null ? confirmedBy.getFullName() : "Hệ thống");
 
             // Thêm thông tin về chính sách hủy booking
             emailDetail.setCancellationPolicy(
-                    String.format("Lưu ý: Bạn chỉ có thể hủy booking trước %d phút so với giờ đã đặt. Sau đó vui lòng liên hệ staff để được hỗ trợ.", ALLOW_CANCEL_BEFORE_MINUTES)
+                    String.format("Lưu ý: Bạn chỉ có thể hủy đơn đặt chỗ trước %d phút so với thời gian đã đặt. Sau thời gian này, vui lòng liên hệ nhân viên để được hỗ trợ.", ALLOW_CANCEL_BEFORE_MINUTES)
             );
 
             emailService.sendBookingConfirmedEmail(emailDetail);
         } catch (Exception e) {
-            System.err.println("Failed to send booking confirmed email: " + e.getMessage());
+            System.err.println("Gửi email xác nhận đơn đặt chỗ thất bại: " + e.getMessage());
         }
     }
 
     /**
      * Gửi email thông báo hủy booking
      */
-    private void sendBookingCancellationEmail(Booking booking) {
+    private void sendBookingCancellationEmail(Booking booking, String cancellationType, String cancellationReason) {
         try {
             User driver = booking.getDriver();
             Vehicle vehicle = booking.getVehicle();
@@ -406,7 +472,7 @@ public class BookingService {
 
             EmailDetail emailDetail = new EmailDetail();
             emailDetail.setRecipient(driver.getEmail());
-            emailDetail.setSubject("THÔNG BÁO HỦY BOOKING - " + booking.getConfirmationCode());
+            emailDetail.setSubject("THÔNG BÁO HỦY ĐẶT LỊCH");
             emailDetail.setFullName(driver.getFullName());
 
             emailDetail.setBookingId(booking.getId());
@@ -420,20 +486,28 @@ public class BookingService {
             DateTimeFormatter formatter = DateTimeFormatter.ofPattern("HH:mm - dd/MM/yyyy");
             emailDetail.setBookingTime(booking.getBookingTime().format(formatter));
 
-            emailDetail.setVehicleModel(vehicle.getModel() != null ? vehicle.getModel() : vehicle.getPlateNumber());
+            // TÁCH RIÊNG: Model xe và Biển số xe
+            emailDetail.setVehicleModel(vehicle.getModel() != null ? vehicle.getModel() : "Xe điện");
+            emailDetail.setVehiclePlateNumber(vehicle.getPlateNumber()); // Biển số riêng
+
             emailDetail.setBatteryType(
                     station.getBatteryType().getName() +
                             (station.getBatteryType().getCapacity() != null ? " - " + station.getBatteryType().getCapacity() + "kWh" : "")
             );
-            emailDetail.setStatus("CANCELLED");
+            emailDetail.setStatus("HỦY");
+            // Mã xác nhận KHÔNG kèm biển số
             emailDetail.setConfirmationCode(booking.getConfirmationCode());
 
             // Thêm thông tin chính sách hủy
-            emailDetail.setCancellationPolicy("Booking của bạn đã được hủy thành công. Pin đã được giải phóng.");
+            emailDetail.setCancellationPolicy("Lịch đặt của bạn đã được hủy thành công. Pin đã được giải phóng.");
+
+            // Thêm loại hủy và lý do hủy
+            emailDetail.setCancellationType(cancellationType);
+            emailDetail.setCancellationReason(cancellationReason);
 
             emailService.sendBookingCancellationEmail(emailDetail);
         } catch (Exception e) {
-            System.err.println("Failed to send booking cancellation email: " + e.getMessage());
+            System.err.println("Gửi email xác nhận đơn đặt chỗ thất bại: " + e.getMessage());
         }
     }
 
@@ -442,20 +516,22 @@ public class BookingService {
     @Transactional(readOnly = true)
     public List<Booking> getMyBookings() {
         User currentUser = authenticationService.getCurrentUser();
-        return bookingRepository.findByDriver(currentUser);
+        // Sử dụng JOIN FETCH để tránh N+1 query problem
+        return bookingRepository.findByDriverWithDetails(currentUser);
     }
 
     @Transactional(readOnly = true)
     public Booking getMyBooking(Long id) {
         User currentUser = authenticationService.getCurrentUser();
-        return bookingRepository.findByIdAndDriver(id, currentUser)
-                .orElseThrow(() -> new NotFoundException("Booking not found"));
+        // Sử dụng JOIN FETCH để tránh N+1 query problem
+        return bookingRepository.findByIdAndDriverWithDetails(id, currentUser)
+                .orElseThrow(() -> new NotFoundException("Lịch đặt không tìm thấy"));
     }
 
     @Transactional(readOnly = true)
     public List<Station> getCompatibleStations(Long vehicleId) {
         Vehicle vehicle = vehicleRepository.findById(vehicleId)
-                .orElseThrow(() -> new NotFoundException("Vehicle not found"));
+                .orElseThrow(() -> new NotFoundException("xe không tìm thấy"));
         return stationRepository.findStationsWithAvailableBatteries(
                 vehicle.getBatteryType(),
                 80
@@ -466,11 +542,12 @@ public class BookingService {
     public List<Booking> getAllBookings() {
         User currentUser = authenticationService.getCurrentUser();
         if (!isAdminOrStaff(currentUser)) {
-            throw new AuthenticationException("Access denied");
+            throw new AuthenticationException("Không có quyền truy cập!");
         }
 
         if (currentUser.getRole() == User.Role.ADMIN) {
-            return bookingRepository.findAll();
+            // Sử dụng JOIN FETCH để tránh N+1 query problem
+            return bookingRepository.findAllWithDetails();
         }
 
         List<Station> myStations = staffStationAssignmentRepository.findStationsByStaff(currentUser);
@@ -478,7 +555,8 @@ public class BookingService {
             return List.of();
         }
 
-        return bookingRepository.findByStationIn(myStations);
+        // Sử dụng JOIN FETCH để tránh N+1 query problem
+        return bookingRepository.findByStationInWithDetails(myStations);
     }
 
     @Transactional(readOnly = true)
@@ -486,38 +564,22 @@ public class BookingService {
         User currentUser = authenticationService.getCurrentUser();
 
         if (!isAdminOrStaff(currentUser)) {
-            throw new AuthenticationException("Chi Staff/Admin moi xem duoc bookings");
+            throw new AuthenticationException("Chỉ Staff/Admin mới xem được!");
         }
 
         if (currentUser.getRole() == User.Role.ADMIN) {
-            return bookingRepository.findAll();
+            // Sử dụng JOIN FETCH để tránh N+1 query problem
+            return bookingRepository.findAllWithDetails();
         }
 
         List<Station> myStations = staffStationAssignmentRepository.findStationsByStaff(currentUser);
 
         if (myStations.isEmpty()) {
-            throw new AuthenticationException("Ban chua duoc assign vao tram nao");
+            throw new AuthenticationException("Chưa được phân công vào trạm!");
         }
 
-        return bookingRepository.findByStationIn(myStations);
-    }
-
-    @Transactional(readOnly = true)
-    public List<Booking> getBookingsByStation(Long stationId) {
-        User currentUser = authenticationService.getCurrentUser();
-        if (!isAdminOrStaff(currentUser)) {
-            throw new AuthenticationException("Access denied");
-        }
-        return bookingRepository.findByStationId(stationId);
-    }
-
-    @Transactional(readOnly = true)
-    public List<Booking> getBookingsByStatus(Booking.Status status) {
-        User currentUser = authenticationService.getCurrentUser();
-        if (!isAdminOrStaff(currentUser)) {
-            throw new AuthenticationException("Access denied");
-        }
-        return bookingRepository.findByStatus(status);
+        // Sử dụng JOIN FETCH để tránh N+1 query problem
+        return bookingRepository.findByStationInWithDetails(myStations);
     }
 
 

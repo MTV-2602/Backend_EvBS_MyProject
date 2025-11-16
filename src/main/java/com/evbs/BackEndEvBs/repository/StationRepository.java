@@ -32,4 +32,14 @@ public interface StationRepository extends JpaRepository<Station, Long> {
     List<Station> findStationsWithAvailableBatteries(
             @Param("batteryType") BatteryType batteryType, 
             @Param("minHealth") Integer minHealth);
+
+    // Dashboard queries - Đếm station theo status
+    Long countByStatus(Station.Status status);
+
+    // Tổng capacity của tất cả stations
+    @Query("SELECT SUM(s.capacity) FROM Station s")
+    Long sumTotalCapacity();
+    
+    // Đếm số trạm theo loại BatteryType (kiểm tra khi xóa BatteryType)
+    long countByBatteryType_Id(Long batteryTypeId);
 }

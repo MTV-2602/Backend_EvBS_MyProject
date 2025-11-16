@@ -27,13 +27,6 @@ public class StationInventoryController {
         return ResponseEntity.ok(stationInventoryService.getAllBatteriesInWarehouseWithDetails());
     }
 
-    @GetMapping("/warehouse/needs-maintenance")
-    @PreAuthorize("hasRole('ADMIN') or hasRole('STAFF')")
-    @Operation(summary = "Get batteries needing maintenance IN WAREHOUSE")
-    public ResponseEntity<Map<String, Object>> getBatteriesNeedingMaintenanceInWarehouse() {
-        return ResponseEntity.ok(stationInventoryService.getBatteriesNeedingMaintenanceInWarehouse());
-    }
-
     @GetMapping("/available-by-type/{batteryTypeId}")
     @PreAuthorize("hasRole('ADMIN') or hasRole('STAFF')")
     @Operation(summary = "Get available batteries in warehouse by battery type")

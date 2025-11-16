@@ -1,6 +1,7 @@
 package com.evbs.BackEndEvBs.exception;
 
 import com.evbs.BackEndEvBs.exception.exceptions.AuthenticationException;
+import com.evbs.BackEndEvBs.exception.exceptions.NotFoundException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.InternalAuthenticationServiceException;
@@ -27,22 +28,63 @@ public class APIExceptionHandler {
     @ExceptionHandler(BadCredentialsException.class)
     @ResponseStatus()
     public ResponseEntity handleBadCredentialsException(BadCredentialsException exception) {
-        return ResponseEntity.status(401).body("Invalid username or password");
+        return ResponseEntity.status(401).body("Số điện thoại hoặc mật khẩu không hợp lệ");
     }
 
     @ExceptionHandler(InternalAuthenticationServiceException.class)
     public ResponseEntity handleInternalAuthenticationServiceException(InternalAuthenticationServiceException exception) {
-        return ResponseEntity.status(401).body("Invalid username or password");
+        return ResponseEntity.status(401).body("Số điện thoại hoặc mật khẩu không hợp lệ");
     }
 
     @ExceptionHandler(AuthenticationException.class)
     public ResponseEntity handleAuthenticationException(AuthenticationException exception) {
         // Kiểm tra nếu là lỗi không được thao tác trên chính mình
-        if (exception.getMessage().contains("Cannot update your own account") || 
-            exception.getMessage().contains("Cannot delete your own account")) {
+        if (exception.getMessage().contains("Không thể cập nhật tài khoản của riêng bạn") ||
+            exception.getMessage().contains("Không thể cập nhật tài khoản của riêng bạn")) {
             return ResponseEntity.status(403).body(exception.getMessage());
         }
         return ResponseEntity.status(401).body(exception.getMessage());
+    }
+
+    /**
+     * Xử lý NotFoundException - 404 Not Found
+     * Khi không tìm thấy resource (user, vehicle, booking, etc.)
+     */
+    @ExceptionHandler(NotFoundException.class)
+    public ResponseEntity<String> handleNotFoundException(NotFoundException exception) {
+        return ResponseEntity.status(404).body(exception.getMessage());
+    }
+
+    /**
+     * Xử lý IllegalStateException - 400 Bad Request
+     * Khi business logic không hợp lệ (ví dụ: xóa xe đang có booking active)
+     */
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<String> handleIllegalStateException(IllegalStateException exception) {
+        return ResponseEntity.status(400).body(exception.getMessage());
+    }
+
+    /**
+     * Xử lý IllegalArgumentException - 400 Bad Request
+     * Khi tham số không hợp lệ
+     */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<String> handleIllegalArgumentException(IllegalArgumentException exception) {
+        return ResponseEntity.status(400).body(exception.getMessage());
+    }
+
+    /**
+     * Xử lý tất cả các exception chưa được handle - 500 Internal Server Error
+     * Tất cả lỗi hệ thống (JDBC, database, network, etc.) đều trả về "Lỗi mạng!"
+     */
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<String> handleGeneralException(Exception exception) {
+        // Log để debug (chỉ server thấy, không gửi cho client)
+        System.err.println("Unhandled exception: " + exception.getClass().getName());
+        exception.printStackTrace();
+        
+        // Trả về message ngắn gọn, dễ hiểu cho user
+        return ResponseEntity.status(500).body("Lỗi mạng!");
     }
 }
 

@@ -29,8 +29,8 @@ public class PaymentController {
     // ==================== READ ENDPOINTS ====================
 
     @GetMapping
-    @PreAuthorize("hasRole('ADMIN')")
-    @Operation(summary = "Get all payments", description = "Get all payments (Admin only)")
+    @PreAuthorize("hasAnyRole('ADMIN', 'STAFF')")
+    @Operation(summary = "Get all payments", description = "Get all payments (Admin/Staff only)")
     public ResponseEntity<List<Payment>> getAllPayments() {
         List<Payment> payments = paymentService.getAllPayments();
         return ResponseEntity.ok(payments);

@@ -4,6 +4,7 @@ import com.evbs.BackEndEvBs.model.EmailDetail;
 import com.evbs.BackEndEvBs.entity.Payment;
 import com.evbs.BackEndEvBs.entity.ServicePackage;
 import com.evbs.BackEndEvBs.entity.User;
+import com.evbs.BackEndEvBs.entity.Vehicle;
 import com.evbs.BackEndEvBs.entity.SwapTransaction;
 import com.evbs.BackEndEvBs.entity.Battery;
 import com.evbs.BackEndEvBs.entity.DriverSubscription;
@@ -24,6 +25,7 @@ import org.slf4j.LoggerFactory;
 import java.text.NumberFormat;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Locale;
 import java.math.BigDecimal;
 
@@ -42,39 +44,6 @@ public class EmailService {
     private String fromEmail;
 
     /**
-     * Gửi email xác nhận đặt lịch booking
-     */
-    public void sendBookingConfirmationEmail(EmailDetail emailDetail){
-        try {
-            Context context = new Context();
-            context.setVariable("customerName", emailDetail.getFullName());
-            context.setVariable("bookingId", emailDetail.getBookingId());
-            context.setVariable("stationName", emailDetail.getStationName());
-            context.setVariable("stationLocation", emailDetail.getStationLocation());
-            context.setVariable("stationContact", emailDetail.getStationContact());
-            context.setVariable("bookingTime", emailDetail.getBookingTime());
-            context.setVariable("vehicleModel", emailDetail.getVehicleModel());
-            context.setVariable("batteryType", emailDetail.getBatteryType());
-            context.setVariable("status", emailDetail.getStatus());
-
-            String text = templateEngine.process("booking-confirmation", context);
-
-            MimeMessage mimeMessage = mailSender.createMimeMessage();
-            MimeMessageHelper mimeMessageHelper = new MimeMessageHelper(mimeMessage, "UTF-8");
-
-            mimeMessageHelper.setFrom(fromEmail);
-            mimeMessageHelper.setTo(emailDetail.getRecipient());
-            mimeMessageHelper.setText(text, true);
-            mimeMessageHelper.setSubject(emailDetail.getSubject());
-            mailSender.send(mimeMessage);
-
-        } catch (MessagingException e) {
-            System.err.println("Failed to send booking confirmation email: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-
-    /**
      * Gửi email thông báo booking đã được confirm với confirmation code
      */
     public void sendBookingConfirmedEmail(EmailDetail emailDetail){
@@ -87,6 +56,7 @@ public class EmailService {
             context.setVariable("stationContact", emailDetail.getStationContact());
             context.setVariable("bookingTime", emailDetail.getBookingTime());
             context.setVariable("vehicleModel", emailDetail.getVehicleModel());
+            context.setVariable("vehiclePlateNumber", emailDetail.getVehiclePlateNumber());
             context.setVariable("batteryType", emailDetail.getBatteryType());
             context.setVariable("status", emailDetail.getStatus());
             context.setVariable("confirmationCode", emailDetail.getConfirmationCode());
@@ -122,10 +92,13 @@ public class EmailService {
             context.setVariable("stationContact", emailDetail.getStationContact());
             context.setVariable("bookingTime", emailDetail.getBookingTime());
             context.setVariable("vehicleModel", emailDetail.getVehicleModel());
+            context.setVariable("vehiclePlateNumber", emailDetail.getVehiclePlateNumber());
             context.setVariable("batteryType", emailDetail.getBatteryType());
             context.setVariable("status", emailDetail.getStatus());
             context.setVariable("cancellationPolicy", emailDetail.getCancellationPolicy());
             context.setVariable("confirmationCode", emailDetail.getConfirmationCode());
+            context.setVariable("cancellationType", emailDetail.getCancellationType());
+            context.setVariable("cancellationReason", emailDetail.getCancellationReason());
 
             String text = templateEngine.process("booking-cancellation", context);
 
@@ -210,7 +183,7 @@ public class EmailService {
     /**
      * Gửi email thông báo ticket mới đến Staff
      */
-    public void sendTicketCreatedToStaff(java.util.List<User> staffList, SupportTicket ticket) {
+    public void sendTicketCreatedToStaff(List<User> staffList, SupportTicket ticket) {
         if (staffList == null || staffList.isEmpty()) {
             log.warn("Không có staff nào để gửi email cho ticket: {}", ticket.getId());
             return;
@@ -250,7 +223,7 @@ public class EmailService {
     /**
      * Gửi email thông báo ticket mới đến Admin
      */
-    public void sendTicketCreatedToAdmin(java.util.List<User> adminList, SupportTicket ticket) {
+    public void sendTicketCreatedToAdmin(List<User> adminList, SupportTicket ticket) {
         if (adminList == null || adminList.isEmpty()) {
             log.warn("Không có admin nào để gửi email cho ticket: {}", ticket.getId());
             return;
@@ -315,6 +288,38 @@ public class EmailService {
         } catch (MessagingException e) {
             log.error("Lỗi khi gửi email phản hồi ticket cho driver {}: {}",
                     response.getTicket().getDriver().getEmail(), e.getMessage());
+        }
+    }
+
+    /**
+     * Gửi email thông báo subscription bị xóa bởi Admin đến Driver
+     */
+    public void sendSubscriptionDeletedEmail(User driver, DriverSubscription subscription, String cancelledBy, String reason) {
+        try {
+            log.info("Đang gửi email thông báo xóa subscription đến driver: {} cho subscription: {}",
+                    driver.getEmail(), subscription.getId());
+
+            Context context = createSubscriptionDeletedEmailContext(driver, subscription, cancelledBy, reason);
+
+            String htmlContent = templateEngine.process("subscription-deleted-email", context);
+
+            MimeMessage mimeMessage = mailSender.createMimeMessage();
+            MimeMessageHelper mimeMessageHelper = new MimeMessageHelper(mimeMessage, "UTF-8");
+
+            mimeMessageHelper.setFrom(fromEmail);
+            mimeMessageHelper.setTo(driver.getEmail());
+            mimeMessageHelper.setText(htmlContent, true);
+            mimeMessageHelper.setSubject("THÔNG BÁO: Gói dịch vụ của bạn đã bị hủy - EV Battery Swap");
+
+            mailSender.send(mimeMessage);
+
+            log.info("Email xóa subscription đã được gửi thành công cho driver: {}", driver.getEmail());
+
+        } catch (MessagingException e) {
+            log.error("Lỗi khi gửi email xóa subscription cho driver {}: {}",
+                    driver.getEmail(), e.getMessage());
+            System.err.println("Failed to send subscription deleted email: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -463,11 +468,228 @@ public class EmailService {
         return context;
     }
 
+    private Context createSubscriptionDeletedEmailContext(User driver, DriverSubscription subscription, String cancelledBy, String reason) {
+        Context context = new Context();
+        DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("dd/MM/yyyy");
+        DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss");
+
+        ServicePackage servicePackage = subscription.getServicePackage();
+
+        // Thông tin driver
+        context.setVariable("driverName", driver.getFullName());
+        context.setVariable("driverEmail", driver.getEmail());
+
+        // Thông tin subscription
+        context.setVariable("subscriptionId", subscription.getId().toString());
+        context.setVariable("packageName", servicePackage.getName());
+        context.setVariable("packagePrice", formatCurrency(servicePackage.getPrice()));
+        context.setVariable("startDate", subscription.getStartDate().format(dateFormatter));
+        context.setVariable("endDate", subscription.getEndDate().format(dateFormatter));
+
+        // Tính số lượt đã sử dụng và còn lại
+        Integer maxSwaps = servicePackage.getMaxSwaps();
+        Integer remainingSwaps = subscription.getRemainingSwaps();
+        Integer usedSwaps = maxSwaps - remainingSwaps;
+
+        context.setVariable("usedSwaps", usedSwaps.toString());
+        context.setVariable("remainingSwaps", remainingSwaps.toString());
+
+        // Thông tin hủy bỏ
+        context.setVariable("cancellationTime", LocalDateTime.now().format(dateTimeFormatter));
+        context.setVariable("cancelledBy", cancelledBy != null ? cancelledBy : "Quản trị viên");
+        context.setVariable("reason", reason != null && !reason.isEmpty() ? reason :
+                "Gói dịch vụ đã bị hủy bởi quản trị viên hệ thống. Nếu bạn có bất kỳ thắc mắc nào, vui lòng liên hệ với bộ phận hỗ trợ khách hàng.");
+
+        // Thông tin hỗ trợ
+        context.setVariable("supportEmail", "sp.evswapstation@gmail.com");
+        context.setVariable("systemName", "EV Battery Swap Station");
+
+        return context;
+    }
+
     private String formatCurrency(BigDecimal amount) {
         if (amount == null) {
             return "0 VNĐ";
         }
         NumberFormat formatter = NumberFormat.getInstance(new Locale("vi", "VN"));
         return formatter.format(amount) + " VNĐ";
+    }
+
+
+    // Thêm vào EmailService.java
+    /**
+     * Gửi email reset password
+     */
+    public void sendPasswordResetEmail(EmailDetail emailDetail) {
+        try {
+            Context context = new Context();
+            context.setVariable("customerName", emailDetail.getFullName());
+            context.setVariable("resetLink", emailDetail.getUrl());
+            context.setVariable("supportEmail", "sp.evswapstation@gmail.com");
+            context.setVariable("systemName", "EV Battery Swap Station");
+
+            String htmlContent = templateEngine.process("forgot-password", context);
+
+            MimeMessage mimeMessage = mailSender.createMimeMessage();
+            MimeMessageHelper mimeMessageHelper = new MimeMessageHelper(mimeMessage, "UTF-8");
+
+            mimeMessageHelper.setFrom(fromEmail);
+            mimeMessageHelper.setTo(emailDetail.getRecipient());
+            mimeMessageHelper.setText(htmlContent, true);
+            mimeMessageHelper.setSubject(emailDetail.getSubject());
+
+            mailSender.send(mimeMessage);
+
+            log.info("Email reset password đã được gửi thành công cho: {}", emailDetail.getRecipient());
+
+        } catch (MessagingException e) {
+            log.error("Lỗi khi gửi email reset password cho {}: {}", emailDetail.getRecipient(), e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Gửi email thông báo cho admin khi có yêu cầu đăng ký xe mới
+     */
+    public void sendVehicleRequestToAdmin(List<User> adminList, Vehicle vehicle) {
+        try {
+            DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss");
+
+            for (User admin : adminList) {
+                Context context = new Context();
+
+                // Thời gian gửi yêu cầu
+                context.setVariable("requestTime", LocalDateTime.now().format(dateTimeFormatter));
+
+                // Thông tin xe
+                context.setVariable("vehicleId", vehicle.getId());
+                context.setVariable("plateNumber", vehicle.getPlateNumber());
+                context.setVariable("vin", vehicle.getVin());
+                context.setVariable("model", vehicle.getModel());
+                context.setVariable("batteryType", vehicle.getBatteryType() != null ?
+                        vehicle.getBatteryType().getName() : "Chưa xác định");
+
+                // Thông tin driver
+                context.setVariable("driverName", vehicle.getDriver().getFullName());
+                context.setVariable("driverEmail", vehicle.getDriver().getEmail());
+                context.setVariable("driverPhone", vehicle.getDriver().getPhoneNumber() != null ?
+                        vehicle.getDriver().getPhoneNumber() : "Chưa cập nhật");
+
+                // Ảnh giấy đăng ký xe - đã là full URL từ FileStorageService
+                context.setVariable("registrationImageUrl", vehicle.getRegistrationImage());
+
+                String htmlContent = templateEngine.process("vehicle-request-admin", context);
+
+                MimeMessage mimeMessage = mailSender.createMimeMessage();
+                MimeMessageHelper mimeMessageHelper = new MimeMessageHelper(mimeMessage, "UTF-8");
+
+                mimeMessageHelper.setFrom(fromEmail);
+                mimeMessageHelper.setTo(admin.getEmail());
+                mimeMessageHelper.setText(htmlContent, true);
+                mimeMessageHelper.setSubject("Yêu cầu đăng ký xe mới cần duyệt - Xe #" + vehicle.getId());
+
+                mailSender.send(mimeMessage);
+
+                log.info("Email thông báo yêu cầu đăng ký xe đã được gửi cho admin: {}", admin.getEmail());
+            }
+        } catch (MessagingException e) {
+            log.error("Lỗi khi gửi email thông báo yêu cầu đăng ký xe: {}", e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    /**
+     * Gửi email thông báo cho tài xế khi xe được phê duyệt
+     */
+    public void sendVehicleApprovedToDriver(Vehicle vehicle) {
+        try {
+            User driver = vehicle.getDriver();
+            Context context = new Context();
+
+            // Thông tin tài xế
+            context.setVariable("driverName", driver.getFullName());
+
+            // Thông tin xe
+            context.setVariable("vehiclePlateNumber", vehicle.getPlateNumber());
+            context.setVariable("vehicleVin", vehicle.getVin());
+            context.setVariable("vehicleModel", vehicle.getModel());
+            context.setVariable("batteryTypeName", vehicle.getBatteryType() != null ?
+                    vehicle.getBatteryType().getName() : "Chưa xác định");
+
+            // Thông tin pin được gắn vào xe
+            if (vehicle.getCurrentBattery() != null) {
+                Battery battery = vehicle.getCurrentBattery();
+                context.setVariable("batteryModel", battery.getModel() != null ? battery.getModel() : "N/A");
+                context.setVariable("batteryCapacity", battery.getCapacity() != null ?
+                        battery.getCapacity().intValue() : 0);
+                context.setVariable("batteryChargeLevel", battery.getChargeLevel() != null ?
+                        battery.getChargeLevel().intValue() : 100);
+                context.setVariable("batteryHealth", battery.getStateOfHealth() != null ?
+                        battery.getStateOfHealth().intValue() : 100);
+            } else {
+                // Fallback values nếu không có pin (không nên xảy ra)
+                context.setVariable("batteryModel", "N/A");
+                context.setVariable("batteryCapacity", 0);
+                context.setVariable("batteryChargeLevel", 0);
+                context.setVariable("batteryHealth", 0);
+            }
+
+            String htmlContent = templateEngine.process("vehicle-approved-driver", context);
+
+            MimeMessage mimeMessage = mailSender.createMimeMessage();
+            MimeMessageHelper mimeMessageHelper = new MimeMessageHelper(mimeMessage, "UTF-8");
+
+            mimeMessageHelper.setFrom(fromEmail);
+            mimeMessageHelper.setTo(driver.getEmail());
+            mimeMessageHelper.setText(htmlContent, true);
+            mimeMessageHelper.setSubject("Xe của bạn đã được phê duyệt - EV Battery Swap Station");
+
+            mailSender.send(mimeMessage);
+
+            log.info("Email thông báo xe được phê duyệt đã được gửi cho tài xế: {}", driver.getEmail());
+
+        } catch (MessagingException e) {
+            log.error("Lỗi khi gửi email thông báo xe được phê duyệt cho tài xế: {}", e.getMessage());
+            e.printStackTrace();
+        }
+    }
+    /**
+     * Gửi email thông báo cho tài xế khi xe bị từ chối
+     */
+    public void sendVehicleRejectedToDriver(Vehicle vehicle, String rejectionReason) {
+        try {
+            User driver = vehicle.getDriver();
+            Context context = new Context();
+
+            // Thông tin tài xế
+            context.setVariable("driverName", driver.getFullName());
+
+            // Thông tin xe
+            context.setVariable("vehiclePlateNumber", vehicle.getPlateNumber());
+            context.setVariable("vehicleVin", vehicle.getVin());
+            context.setVariable("vehicleModel", vehicle.getModel());
+            context.setVariable("batteryTypeName", vehicle.getBatteryType() != null ?
+                    vehicle.getBatteryType().getName() : "Chưa xác định");
+
+            // Lý do từ chối (optional)
+            context.setVariable("rejectionReason", rejectionReason);
+
+            String htmlContent = templateEngine.process("vehicle-rejected-driver", context);
+
+            MimeMessage mimeMessage = mailSender.createMimeMessage();
+            MimeMessageHelper mimeMessageHelper = new MimeMessageHelper(mimeMessage, "UTF-8");
+
+            mimeMessageHelper.setFrom(fromEmail);
+            mimeMessageHelper.setTo(driver.getEmail());
+            mimeMessageHelper.setText(htmlContent, true);
+            mimeMessageHelper.setSubject("Yêu cầu đăng ký xe bị từ chối - EV Battery Swap Station");
+
+            mailSender.send(mimeMessage);
+
+            log.info("Email thông báo xe bị từ chối đã được gửi cho tài xế: {}", driver.getEmail());
+
+        } catch (MessagingException e) {
+            log.error("Lỗi khi gửi email thông báo xe bị từ chối cho tài xế: {}", e.getMessage());
+            e.printStackTrace();
+        }
     }
 }

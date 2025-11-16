@@ -6,6 +6,7 @@ public class EmailDetail {
     String recipient;
     String subject;
     String fullName;
+    String url;
 
     // Booking details
     Long bookingId;
@@ -14,6 +15,7 @@ public class EmailDetail {
     String stationContact;
     String bookingTime;
     String vehicleModel;
+    String vehiclePlateNumber;
     String batteryType;
     String status;
     String confirmationCode;

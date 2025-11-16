@@ -1,13 +1,17 @@
 package com.evbs.BackEndEvBs.service;
 
+import com.evbs.BackEndEvBs.entity.Battery;
 import com.evbs.BackEndEvBs.entity.BatteryType;
+import com.evbs.BackEndEvBs.entity.Booking;
 import com.evbs.BackEndEvBs.entity.Station;
 import com.evbs.BackEndEvBs.entity.User;
 import com.evbs.BackEndEvBs.exception.exceptions.AuthenticationException;
 import com.evbs.BackEndEvBs.exception.exceptions.NotFoundException;
 import com.evbs.BackEndEvBs.model.request.StationRequest;
 import com.evbs.BackEndEvBs.model.request.StationUpdateRequest;
+import com.evbs.BackEndEvBs.repository.BatteryRepository;
 import com.evbs.BackEndEvBs.repository.BatteryTypeRepository;
+import com.evbs.BackEndEvBs.repository.BookingRepository;
 import com.evbs.BackEndEvBs.repository.StationRepository;
 import com.evbs.BackEndEvBs.repository.StaffStationAssignmentRepository;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -28,12 +33,21 @@ public class StationService {
 
     @Autowired
     private final BatteryTypeRepository batteryTypeRepository;
+    
+    @Autowired
+    private final BatteryRepository batteryRepository;
+    
+    @Autowired
+    private final BookingRepository bookingRepository;
 
     @Autowired
     private final StaffStationAssignmentRepository staffStationAssignmentRepository;
 
     @Autowired
     private final AuthenticationService authenticationService;
+
+    @Autowired
+    private final BatteryHealthService batteryHealthService;
 
     /**
      * CREATE - Tạo station mới (Admin/Staff only)
@@ -42,17 +56,17 @@ public class StationService {
     public Station createStation(StationRequest request) {
         User currentUser = authenticationService.getCurrentUser();
         if (!isAdminOrStaff(currentUser)) {
-            throw new AuthenticationException("Access denied");
+            throw new AuthenticationException("Truy cập bị từ chối");
         }
 
         // Kiểm tra trùng tên station
         if (stationRepository.existsByName(request.getName())) {
-            throw new AuthenticationException("Station name already exists");
+            throw new AuthenticationException("Tên trạm đã tồn tại");
         }
 
         // Validate battery type
         BatteryType batteryType = batteryTypeRepository.findById(request.getBatteryTypeId())
-                .orElseThrow(() -> new NotFoundException("Battery type not found"));
+                .orElseThrow(() -> new NotFoundException("Không tìm thấy loại pin"));
 
         //  Tạo station thủ công thay vì dùng ModelMapper (tránh conflict)
         Station station = new Station();
@@ -66,7 +80,7 @@ public class StationService {
         station.setLongitude(request.getLongitude());
         station.setBatteryType(batteryType);
         // status = ACTIVE (default)
-        
+
         return stationRepository.save(station);
     }
 
@@ -80,12 +94,12 @@ public class StationService {
     }
 
     /**
-     * READ - Lấy station theo ID (Public)
+     * INTERNAL - Lấy station theo ID (dùng nội bộ)
      */
     @Transactional(readOnly = true)
-    public Station getStationById(Long id) {
+    Station getStationById(Long id) {
         return stationRepository.findById(id)
-                .orElseThrow(() -> new NotFoundException("Station not found"));
+                .orElseThrow(() -> new NotFoundException("Không tìm thấy trạm"));
     }
 
     /**
@@ -94,7 +108,7 @@ public class StationService {
     @Transactional(readOnly = true)
     public List<Station> getStationsByBatteryType(Long batteryTypeId) {
         BatteryType batteryType = batteryTypeRepository.findById(batteryTypeId)
-                .orElseThrow(() -> new NotFoundException("Battery type not found"));
+                .orElseThrow(() -> new NotFoundException("Không tìm thấy loại pin"));
         return stationRepository.findByBatteryType(batteryType);
     }
 
@@ -113,23 +127,23 @@ public class StationService {
     public Station updateStation(Long id, StationUpdateRequest request) {
         User currentUser = authenticationService.getCurrentUser();
         if (!isAdminOrStaff(currentUser)) {
-            throw new AuthenticationException("Access denied");
+            throw new AuthenticationException("Truy cập bị từ chối");
         }
 
         Station station = stationRepository.findById(id)
-                .orElseThrow(() -> new NotFoundException("Station not found"));
+                .orElseThrow(() -> new NotFoundException("Không tìm thấy trạm"));
 
         //  Staff chỉ update được stations được assign
         if (currentUser.getRole() == User.Role.STAFF) {
             if (!staffStationAssignmentRepository.existsByStaffAndStation(currentUser, station)) {
-                throw new AuthenticationException("You are not assigned to manage this station");
+                throw new AuthenticationException("Bạn không được phân công quản lý trạm này");
             }
         }
 
         // Kiểm tra trùng tên station (nếu thay đổi tên)
         if (request.getName() != null && !station.getName().equals(request.getName()) &&
                 stationRepository.existsByName(request.getName())) {
-            throw new AuthenticationException("Station name already exists");
+            throw new AuthenticationException("Tên trạm đã tồn tại");
         }
 
         // Chỉ update những field không null (giữ lại giá trị cũ nếu không nhập)
@@ -158,8 +172,14 @@ public class StationService {
             station.setLongitude(request.getLongitude());
         }
         if (request.getBatteryTypeId() != null) {
+            // KHÔNG ĐỔI LOẠI PIN KHI TRẠM CÓ PIN
+            long batteryCount = batteryRepository.countByCurrentStation_Id(id);
+            if (batteryCount > 0) {
+                throw new IllegalStateException("Trạm đang có " + batteryCount + " pin, không thể đổi loại pin!");
+            }
+            
             BatteryType batteryType = batteryTypeRepository.findById(request.getBatteryTypeId())
-                    .orElseThrow(() -> new NotFoundException("Battery type not found"));
+                    .orElseThrow(() -> new NotFoundException("Không tìm thấy loại pin"));
             station.setBatteryType(batteryType);
         }
 
@@ -168,7 +188,7 @@ public class StationService {
             // Staff chỉ update status cho stations được assign
             if (currentUser.getRole() == User.Role.STAFF) {
                 if (!staffStationAssignmentRepository.existsByStaffAndStation(currentUser, station)) {
-                    throw new AuthenticationException("You are not assigned to manage this station");
+                    throw new AuthenticationException("Bạn không được phân công quản lý trạm này");
                 }
             }
             station.setStatus(request.getStatus());
@@ -179,59 +199,43 @@ public class StationService {
 
     /**
      * DELETE - Xóa station (Admin only)
+     * KIỂM TRA: Không xóa trạm có pin AVAILABLE hoặc booking CONFIRMED
      */
     @Transactional
     public void deleteStation(Long id) {
         User currentUser = authenticationService.getCurrentUser();
         if (currentUser.getRole() != User.Role.ADMIN) {
-            throw new AuthenticationException("Access denied");
+            throw new AuthenticationException("Truy cập bị từ chối");
         }
 
         Station station = stationRepository.findById(id)
-                .orElseThrow(() -> new NotFoundException("Station not found"));
+                .orElseThrow(() -> new NotFoundException("Không tìm thấy trạm"));
+        
+        // KIỂM TRA: Trạm có pin AVAILABLE/PENDING
+        long availableBatteryCount = batteryRepository.findByCurrentStation_Id(id)
+            .stream()
+            .filter(b -> b.getStatus() == Battery.Status.AVAILABLE || 
+                        b.getStatus() == Battery.Status.PENDING)
+            .count();
+            
+        if (availableBatteryCount > 0) {
+            throw new IllegalStateException("Trạm đang có " + availableBatteryCount + " pin, không thể xóa!");
+        }
+        
+        // KIỂM TRA: Trạm có booking CONFIRMED
+        long confirmedBookingCount = bookingRepository.findAll()
+            .stream()
+            .filter(b -> b.getStation().getId().equals(id) && 
+                        b.getStatus() == Booking.Status.CONFIRMED)
+            .count();
+            
+        if (confirmedBookingCount > 0) {
+            throw new IllegalStateException("Trạm đang có " + confirmedBookingCount + " booking CONFIRMED, không thể xóa!");
+        }
+        
+        // Soft delete
         station.setStatus(Station.Status.INACTIVE);
         stationRepository.save(station);
-        
-    }
-
-    /**
-     * UPDATE - Cập nhật status station (Admin/Staff only)
-     */
-    @Transactional
-    public Station updateStationStatus(Long id, Station.Status status) {
-        User currentUser = authenticationService.getCurrentUser();
-        if (!isAdminOrStaff(currentUser)) {
-            throw new AuthenticationException("Access denied");
-        }
-
-        Station station = stationRepository.findById(id)
-                .orElseThrow(() -> new NotFoundException("Station not found"));
-
-        //  Staff chỉ update được stations được assign
-        if (currentUser.getRole() == User.Role.STAFF) {
-            if (!staffStationAssignmentRepository.existsByStaffAndStation(currentUser, station)) {
-                throw new AuthenticationException("You are not assigned to manage this station");
-            }
-        }
-
-        station.setStatus(status);
-        return stationRepository.save(station);
-    }
-    /**
-     * Lấy tất cả pin cần bảo trì tại các trạm
-     * Admin: Xem tất cả pins needs-maintenance của tất cả trạm
-     * Staff: Chỉ xem pins needs-maintenance của trạm mình quản lý
-     */
-    @Transactional(readOnly = true)
-    public Map<String, Object> getAllBatteriesNeedingMaintenanceAtStations() {
-        // Logic này sẽ được implement trong BatteryHealthService
-        // Tạm thời trả về empty result
-        Map<String, Object> response = new HashMap<>();
-        response.put("location", "AT_STATIONS");
-        response.put("total", 0);
-        response.put("batteries", List.of());
-        response.put("message", "Không có pin nào cần bảo trì tại các trạm");
-        return response;
     }
 
     /**
@@ -240,18 +244,39 @@ public class StationService {
      */
     @Transactional(readOnly = true)
     public Map<String, Object> getBatteriesNeedingMaintenanceAtStation(Long stationId) {
-        // Validate station exists
-        Station station = getStationById(stationId);
+        User currentUser = authenticationService.getCurrentUser();
+        
+        // Validate station exists first
+        Station station = stationRepository.findById(stationId)
+                .orElseThrow(() -> new NotFoundException("Không tìm thấy trạm"));
+        
+        // Validate station access for staff
+        if ("STAFF".equals(currentUser.getRole())) {
+            boolean hasAccess = staffStationAssignmentRepository
+                    .existsByStaffAndStation(currentUser, station);
+            if (!hasAccess) {
+                throw new AuthenticationException("Bạn không có quyền truy cập trạm này");
+            }
+        }
 
-        // Logic này sẽ được implement trong BatteryHealthService
-        // Tạm thời trả về empty result
+        // Lấy tất cả pin có SOH < 70% (từ BatteryHealthService)
+        List<Battery> allBatteriesNeedMaintenance = batteryHealthService.getBatteriesNeedingMaintenance();
+        
+        // Filter chỉ lấy pin Ở TRẠM NÀY (currentStation = stationId)
+        List<Battery> batteriesAtStation = allBatteriesNeedMaintenance.stream()
+                .filter(b -> b.getCurrentStation() != null && b.getCurrentStation().getId().equals(stationId))
+                .collect(Collectors.toList());
+        
         Map<String, Object> response = new HashMap<>();
         response.put("stationId", stationId);
         response.put("stationName", station.getName());
         response.put("location", "AT_STATION");
-        response.put("total", 0);
-        response.put("batteries", List.of());
-        response.put("message", "Trạm này không có pin nào cần bảo trì");
+        response.put("total", batteriesAtStation.size());
+        response.put("batteries", batteriesAtStation);
+        response.put("message", batteriesAtStation.isEmpty() 
+            ? "Trạm này không có pin nào cần bảo trì" 
+            : "Trạm này có " + batteriesAtStation.size() + " pin cần bảo trì");
+        
         return response;
     }
 

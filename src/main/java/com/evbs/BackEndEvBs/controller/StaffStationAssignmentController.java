@@ -65,39 +65,17 @@ public class StaffStationAssignmentController {
     }
 
     /**
-     * GET /api/staff-station-assignment/staff/{staffId}/stations : Get stations by staff (Admin only)
+     * GET /api/staff-station-assignment/staff/{staffId}/station/{stationId} : Get specific assignment
      */
-    @GetMapping("/staff/{staffId}/stations")
+    @GetMapping("/staff/{staffId}/station/{stationId}")
     @PreAuthorize("hasRole('ADMIN')")
-    @Operation(summary = "Get stations assigned to a staff",
-            description = "Admin views all stations managed by a specific staff member")
-    public ResponseEntity<List<Station>> getStationsByStaff(@PathVariable Long staffId) {
-        List<Station> stations = assignmentService.getStationsByStaff(staffId);
-        return ResponseEntity.ok(stations);
-    }
-
-    /**
-     * GET /api/staff-station-assignment/station/{stationId}/staff : Get staff by station (Admin only)
-     */
-    @GetMapping("/station/{stationId}/staff")
-    @PreAuthorize("hasRole('ADMIN')")
-    @Operation(summary = "Get staff assigned to a station",
-            description = "Admin views all staff members managing a specific station")
-    public ResponseEntity<List<User>> getStaffByStation(@PathVariable Long stationId) {
-        List<User> staff = assignmentService.getStaffByStation(stationId);
-        return ResponseEntity.ok(staff);
-    }
-
-    /**
-     * GET /api/staff-station-assignment/staff/{staffId}/assignments : Get assignments by staff (Admin only)
-     */
-    @GetMapping("/staff/{staffId}/assignments")
-    @PreAuthorize("hasRole('ADMIN')")
-    @Operation(summary = "Get all assignments of a staff",
-            description = "Admin views detailed assignment records for a specific staff member")
-    public ResponseEntity<List<StaffStationAssignment>> getAssignmentsByStaff(@PathVariable Long staffId) {
-        List<StaffStationAssignment> assignments = assignmentService.getAssignmentsByStaff(staffId);
-        return ResponseEntity.ok(assignments);
+    @Operation(summary = "Get specific staff-station assignment",
+            description = "Admin views a specific assignment by staff ID and station ID")
+    public ResponseEntity<StaffStationAssignment> getAssignment(
+            @PathVariable Long staffId,
+            @PathVariable Long stationId) {
+        StaffStationAssignment assignment = assignmentService.getAssignment(staffId, stationId);
+        return ResponseEntity.ok(assignment);
     }
 
     // ==================== STAFF ENDPOINTS ====================

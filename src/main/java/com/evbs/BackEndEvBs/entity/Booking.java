@@ -85,6 +85,12 @@ public class Booking {
     @Transient
     private Long swapTransactionId;
 
+    @Column(name = "CancellationReason", length = 500)
+    private String cancellationReason;  // Lý do hủy booking (nếu có)
+
+    @Transient
+    private Integer remainingSwaps;  // Số lượt swap còn lại của driver (set từ service)
+
     // Expose IDs
     public Long getDriverId() {
         return this.driver != null ? this.driver.getId() : null;
@@ -137,5 +143,53 @@ public class Booking {
         return this.swapTransaction != null 
             ? this.swapTransaction.getSwapInBatteryModel() 
             : null;
+    }
+
+    // ========== EXPOSE VEHICLE INFO ==========
+    @Transient
+    public String getVehiclePlateNumber() {
+        return this.vehicle != null ? this.vehicle.getPlateNumber() : null;
+    }
+
+    @Transient
+    public String getVehicleModel() {
+        return this.vehicle != null ? this.vehicle.getModel() : null;
+    }
+
+    @Transient
+    public String getVehicleVin() {
+        return this.vehicle != null ? this.vehicle.getVin() : null;
+    }
+
+    // ========== EXPOSE DRIVER INFO ==========
+    @Transient
+    public String getDriverName() {
+        return this.driver != null ? this.driver.getFullName() : null;
+    }
+
+    @Transient
+    public String getDriverPhone() {
+        return this.driver != null ? this.driver.getPhoneNumber() : null;
+    }
+
+    @Transient
+    public String getDriverEmail() {
+        return this.driver != null ? this.driver.getEmail() : null;
+    }
+
+    // ========== EXPOSE STATION INFO ==========
+    @Transient
+    public String getStationName() {
+        return this.station != null ? this.station.getName() : null;
+    }
+
+    @Transient
+    public String getStationLocation() {
+        return this.station != null ? this.station.getLocation() : null;
+    }
+
+    @Transient
+    public String getStationContact() {
+        return this.station != null ? this.station.getContactInfo() : null;
     }
 }
